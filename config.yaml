@@ -1,0 +1,8 @@
+audio:
+  sample_rate: 16000
+  chunk_duration: 10.0   # PyanNet was traced on 10s
+  step_ratio: 0.1        # 10% step → 1s hop at 16kHz
+  fbank:
+    num_mel_bins: 80
+    frame_length: 25.0   # ms
+    frame_shift: 10.0    # ms
