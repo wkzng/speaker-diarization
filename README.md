@@ -13,6 +13,22 @@ The pipeline runs two parallel branches on each audio chunk, then merges them:
 - **Embedding**: WeSpeakerResNet34 encodes each speech segment into a 256-d speaker vector
 - **Clustering**: Agglomerative clustering assigns global speaker identities across the full file
 
+## Benchmark — ONNX Runtime vs OpenVINO (CPU)
+
+Measured on CPU with `time.perf_counter()` over 1000 runs (5 warmup), using random inputs.
+Input sizes: segmentation `1×1×160000` (10s chunk), embedding `1×98×80` (1s chunk).
+
+| Model | ONNX mean | ONNX std | OpenVINO mean | OpenVINO std | Winner |
+|---|---|---|---|---|---|
+| Segmentation (PyanNet) | 40.59ms | ±8.56ms | 48.40ms | ±5.80ms | ONNX ✓ |
+| Embedding (WeSpeakerResNet34) | 19.39ms | ±1.75ms | 23.90ms | ±2.17ms | ONNX ✓ |
+
+**ONNX Runtime wins on both models** on this hardware (~0.84x speedup on segmentation, ~0.81x on embedding).
+
+Notably, OpenVINO shows **lower variance** on the segmentation model (±5.80ms vs ±8.56ms), which may matter in latency-sensitive deployments where worst-case tail latency is the constraint rather than average throughput.
+
+> Results are hardware-dependent. OpenVINO is expected to close the gap or outperform on Intel hardware with AVX-512 or on devices with an integrated NPU. 
+
 
 ## References Papers and Related Topics
 - [1] Mirco Ravanelli, Yoshua Bengio, “Speaker Recognition from raw waveform with SincNet” [Arxiv](https://arxiv.org/abs/2109.08910)

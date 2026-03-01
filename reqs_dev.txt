@@ -1,0 +1,7 @@
+pyannote.audio
+onnxscript 
+onnx 
+onnxruntime
+openvino
+torchinfo
+python-dotenv
