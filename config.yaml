@@ -1,8 +1,33 @@
 audio:
   sample_rate: 16000
-  chunk_duration: 10.0   # PyanNet was traced on 10s
-  step_ratio: 0.1        # 10% step → 1s hop at 16kHz
+  chunk_duration: 10.0     # PyanNet was traced on 10s
+  hop_duration: 1.0        # step between chunks in seconds (1s hop -> 90% overlap on 10s chunks)
+  allow_padding: true
   fbank:
     num_mel_bins: 80
-    frame_length: 25.0   # ms
-    frame_shift: 10.0    # ms
+    frame_length: 25.0     # ms
+    frame_shift: 10.0      # ms
+
+
+pipeline:
+  # Powerset confidence gate -> frames where the winning class probability
+  # is below this are treated as silence regardless of argmax result
+  speech_on: 0.5
+
+  # Min/max duration filtering (Bredin 2023 Binarize hyperparameters)
+  # Paper: https://hal.science/hal-04247212v1/document
+  min_duration_on: 0.1     # remove speech regions shorter than this
+  min_duration_off: 0.1    # fill silence gaps shorter than this
+
+  # Embedding extraction
+  min_active_frames: 10       # minimum active frames in a slot to attempt embedding
+  min_embedding_samples: 400  # minimum waveform samples for embedding model input
+
+  # Post-clustering
+  min_segment_duration: 0.1  # seconds — drop segments shorter than this
+  merge_gap: 0.1             # seconds — bridge same-speaker gaps smaller than this
+
+
+clustering:
+  max_speakers: 10
+  method: agglomerative  # or kmeans

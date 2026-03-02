@@ -1,6 +1,5 @@
-import wave
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Generator, Tuple
 
 import numpy as np
 import torch
@@ -13,37 +12,26 @@ from config import AudioConfig
 class AudioProcessor:
     """
     Encapsulates all audio loading and preprocessing operations.
-    audio.py — Audio I/O and preprocessing.
 
     Responsibilities:
     - Load WAV files (mono, resample to target sample rate)
     - Chunk audio into overlapping windows for segmentation
     - Compute mel filterbank features (fbank) for the embedding model
 
-    Fbank parameters must match what compute_fbank() produced during model export
-    (verified: 98 frames per 1s at 16kHz, 80 mel bins). All parameters are now
-    driven by AudioConfig rather than module-level constants.
-    
     Parameters
     ----------
     config : AudioConfig
-        Audio parameters (sample rate, chunk size, fbank settings).
 
     Example
     -------
-    >>> from config import AppConfig
     >>> proc = AudioProcessor(AppConfig.default().audio)
     >>> waveform, duration = proc.load("audio/debate.wav")
-    >>> for chunk, t0, t1 in proc.sliding_chunks(waveform):
+    >>> for chunk, t0, t1, t_real in proc.sliding_chunks(waveform):
     ...     fbank = proc.compute_fbank(chunk)
     """
 
     def __init__(self, config: AudioConfig) -> None:
         self.config = config
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────────────────────────────────────────
 
     def load(self, path: Path | str) -> Tuple[torch.Tensor, float]:
         """
@@ -51,10 +39,8 @@ class AudioProcessor:
 
         Returns
         -------
-        waveform : torch.Tensor
-            Shape (1, 1, N) — batch × channel × samples.
+        waveform : torch.Tensor, shape (1, 1, N)
         duration : float
-            Audio duration in seconds.
         """
         path = Path(path)
         if not path.exists():
@@ -72,65 +58,56 @@ class AudioProcessor:
         duration = waveform.shape[-1] / self.config.sample_rate
         return waveform.unsqueeze(0), duration
 
-    def sliding_chunks(
-        self,
-        waveform: torch.Tensor,
-    ) -> Iterator[Tuple[torch.Tensor, float, float]]:
+    def sliding_chunks(self, waveform: torch.Tensor) -> Generator:
         """
-        Yield overlapping chunks from a waveform for segmentation inference.
+        Yield non-padded overlapping chunks for segmentation inference.
 
-        Parameters
-        ----------
-        waveform : torch.Tensor
-            Shape (1, 1, N)
+        Stops when the next chunk would extend beyond the audio —
+        i.e. only full chunks are emitted (start + chunk_samples <= n_samples).
+        This avoids feeding zero-padded tail chunks to the segmentation model,
+        which would produce spurious silence votes for the padding region.
 
         Yields
         ------
-        chunk : torch.Tensor
-            Shape (1, 1, chunk_samples) — zero-padded at the end if needed.
-        t_start : float
-            Start time of chunk in seconds.
-        t_end : float
-            End time of chunk in seconds (before padding).
+        chunk : torch.Tensor, shape (1, 1, chunk_samples) — always full, never padded.
+        t_start : float — chunk start in seconds.
+        t_end : float — chunk end in seconds (t_start + chunk_duration).
         """
         cfg = self.config
         n_samples = waveform.shape[-1]
         start = 0
+        min_chunk_size = 0 if cfg.allow_padding else cfg.chunk_samples
 
-        while start < n_samples:
+        while start + min_chunk_size <= n_samples:
             end = start + cfg.chunk_samples
             chunk = waveform[:, :, start:end]
 
+            if cfg.allow_padding and chunk.shape[-1] < cfg.chunk_samples:
+                pad   = cfg.chunk_samples - chunk.shape[-1]
+                chunk = torch.nn.functional.pad(chunk, (0, pad))
+
             t_start = start / cfg.sample_rate
             t_end = min(end, n_samples) / cfg.sample_rate
-
-            if chunk.shape[-1] < cfg.chunk_samples:
-                pad = cfg.chunk_samples - chunk.shape[-1]
-                chunk = torch.nn.functional.pad(chunk, (0, pad))
 
             yield chunk, t_start, t_end
             start += cfg.chunk_step
 
     def compute_fbank(self, waveform: torch.Tensor) -> np.ndarray:
         """
-        Compute mel filterbank features from a raw waveform chunk.
-
-        Replicates emb_model.compute_fbank() without pyannote.
+        Compute mel filterbank features.
         Produces shape (1, 98*duration_s, 80) at default settings.
 
         Parameters
         ----------
-        waveform : torch.Tensor
-            Shape (1, 1, N) or (1, N) at the configured sample rate.
+        waveform : torch.Tensor, shape (1, 1, N) or (1, N)
 
         Returns
         -------
-        fbank : np.ndarray
-            Shape (1, num_frames, fbank_num_mel_bins).
+        np.ndarray, shape (1, num_frames, num_mel_bins)
         """
         cfg = self.config
         wav = waveform.squeeze(0) if waveform.dim() == 3 else waveform
-        wav = wav * 32768.0  # scale to int16 range as kaldi expects
+        wav = wav * 32768.0
 
         features = kaldi.fbank(
             wav,
@@ -142,33 +119,14 @@ class AudioProcessor:
         )
         return features.unsqueeze(0).numpy()
 
-    def profile(self, path: Path | str) -> dict:
-        """
-        Lightweight audio profiler — reads header only, no full waveform load.
-        Used by the batch runner for scheduling.
-        """
-        path = Path(path)
-        with wave.open(str(path), "rb") as wf:
-            sample_rate = wf.getframerate()
-            num_channels = wf.getnchannels()
-            num_frames = wf.getnframes()
-        duration = num_frames / sample_rate
-        return {
-            "path": str(path),
-            "duration": duration,
-            "sample_rate": sample_rate,
-            "num_channels": num_channels,
-            "num_frames": num_frames,
-            "size_bytes": path.stat().st_size,
-            "estimated_chunks": max(1, int(duration / self.config.chunk_duration)),
-        }
 
 
 if __name__ == "__main__":
     from config import AppConfig
 
     proc = AudioProcessor(AppConfig.default().audio)
+    waveform, duration = proc.load("audio/debate.wav")
+    print(f"Loaded: {waveform.shape}, {duration:.1f}s")
 
-    audio_path = "audio/debate.wav"
-    profile = proc.profile(audio_path)
-    print(profile)
+    for i, (chunk, t0, t1) in enumerate(proc.sliding_chunks(waveform)):
+        print(f"  chunk {i:2d}: {t0:.1f}→{t1:.1f}s")
