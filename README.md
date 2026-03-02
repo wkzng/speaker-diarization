@@ -2,6 +2,8 @@
 
 A minimal, production-minded speaker diarization pipeline built on top of the [Community-1](https://github.com/pyannote/pyannote-audio?tab=readme-ov-file) pretrained model. Given an audio file, it outputs a chronogram of speaker turns. Models are exported to ONNX and OpenVINO format at build time. Inference runs on standard CPU with no cloud calls.
 
+Implements: **streaming with WebSocket API (A)** and **multi-file batch processing (C)**.
+
 ---
 
 ## Pipeline Overview
@@ -18,8 +20,8 @@ Audio is processed in overlapping 10-second chunks with a 1-second hop. Each chu
 
 Two modes are supported:
 
-- **`NonCausalDiarization`** — processes the full file, clusters globally. Produces the most accurate output.
-- **`CausalDiarization`** — chunk-by-chunk streaming mode. Matches each new embedding against a rolling speaker memory via cosine similarity and EMA updates. No global clustering step; lower latency, less accurate.
+- **`Diarization`** — processes the full file, clusters globally. Produces the most accurate output.
+- **`StreamingDiarization`** — chunk-by-chunk streaming mode. Matches each new embedding against a rolling speaker memory via cosine similarity and EMA updates. No global clustering step; lower latency, less accurate.
 
 ---
 
@@ -30,11 +32,13 @@ Two modes are supported:
 ./download_models.sh
 ```
 
-### Local (CLI)
+### Local — batch CLI
 
 ```bash
 PYTHONPATH=src python cli.py audio/ --models-dir models --num-speakers 2 --output results/
 ```
+
+Options: `--backend onnx|openvino`, `--workers N`, `--format json|rttm`
 
 ### Local (API server)
 
@@ -74,6 +78,98 @@ The default container entry point is the uvicorn API server. Override with `pyth
 
 ---
 
+## A — Streaming
+
+### WebSocket endpoint
+
+```
+WS /ws/diarize
+```
+
+**Protocol (client → server):**
+
+1. First message — JSON config:
+   ```json
+   {"sample_rate": 16000, "num_speakers": 2}
+   ```
+2. Subsequent messages — raw PCM binary frames: **int16, mono, 16 kHz, exactly 320 KB per message** (160 000 samples × 2 bytes = 10 s chunk).
+3. Text message `"flush"` — triggers final output and resets the pipeline.
+
+**Protocol (server → client):**
+
+One JSON object per committed segment as they arrive:
+```json
+{"speaker": "speaker_0", "start": 1.200, "end": 3.400}
+```
+On flush:
+```json
+{"event": "done", "num_speakers": 2}
+```
+
+### Audio encoding
+
+The pipeline works in **16 kHz mono float32** internally. The WebSocket uses **int16 PCM** — the native output of the Web Audio API and most capture libraries — to avoid base64 overhead. The server normalises to float32 by dividing by 32768.
+
+fbank features use Kaldi-compatible settings (80 mel bins, 25 ms window, 10 ms shift), extracted via `torchaudio.compliance.kaldi.fbank`, matching what WeSpeakerResNet34 was trained on.
+
+### Speaker consistency
+
+`StreamingDiarization` maintains a rolling speaker memory — a dict of `{speaker_id → 256-d embedding}`. Each new embedding is matched to the closest known speaker by cosine similarity. If the best match exceeds `stitch_threshold` (default 0.7), that speaker is reused and their prototype updated via EMA (decay 0.3). Below the threshold, a new speaker is created.
+
+**Limitation:** without global clustering there is no cross-chunk label correction. Over long recordings the EMA prototype can drift, and two acoustically similar speakers may merge. For accurate long-form diarization use `Diarization` (full-file mode) instead.
+
+### Streaming latency
+
+Per-chunk wall time on CPU (1000 runs, 5 warmup, random inputs):
+
+| Stage | ONNX | OpenVINO |
+|---|---|---|
+| Segmentation (10 s chunk) | ~40 ms | ~48 ms |
+| Embedding (1 s segment) | ~19 ms | ~24 ms |
+
+End-to-end latency per 10 s chunk is ~60–100 ms depending on how many embedding calls the chunk produces. **To reduce latency given more time:** INT8 quantization of the embedding model; async embedding pipeline (overlap segmentation and embedding of adjacent chunks); shorter chunk duration (requires retracing PyanNet, accuracy will degrade).
+
+---
+
+## C — Multi-file Batch Processing
+
+```bash
+PYTHONPATH=src python cli.py audio/ \
+  --models-dir models \
+  --workers 4 \
+  --output results/ \
+  --format json   # or rttm
+```
+
+- **Input**: single WAV or directory (recursively globbed for `*.wav`)
+- **Parallelism**: `--workers N` uses a `ThreadPoolExecutor`, each thread with its own pipeline instance. Sufficient for I/O-bound concurrency; swap to `ProcessPoolExecutor` for true CPU parallelism (one-line change)
+- **Failure isolation**: each file is wrapped in try/except; failures are logged per-file and the batch continues. Exit code 1 if any file failed
+- **Output**: per-file JSON or RTTM written to `--output`, file stem preserved
+- **Throughput**: RTF (wall time / audio duration) logged per file
+
+JSON output:
+```json
+{
+  "file": "debate.wav",
+  "duration": 142.3,
+  "num_speakers": 2,
+  "backend": "onnx",
+  "error": null,
+  "segments": [
+    {"speaker": "speaker_0", "start": 0.0, "end": 4.2, "duration": 4.2},
+    {"speaker": "speaker_1", "start": 4.5, "end": 9.1, "duration": 4.6}
+  ]
+}
+```
+
+RTTM output (compatible with `pyannote.metrics` DER computation):
+```
+SPEAKER debate 1 0.000 4.200 <NA> <NA> speaker_0 <NA> <NA>
+SPEAKER debate 1 4.500 4.600 <NA> <NA> speaker_1 <NA> <NA>
+```
+
+---
+
 ## Benchmark — ONNX Runtime vs OpenVINO (CPU)
 
 Measured on CPU with `time.perf_counter()` over 1000 runs (5 warmup), using random inputs.
@@ -101,18 +197,20 @@ Notably, OpenVINO shows **lower variance** on the segmentation model (±5.80ms v
 | Models mounted at runtime, not baked into image | Keeps the Docker image lean and avoids HuggingFace token requirements at build time. Export is a separate offline step. |
 | Agglomerative clustering (Ward linkage) | No need to pre-specify `k`; handles variable speaker count naturally. Ward linkage on L2-normed vectors is equivalent to cosine clustering without a custom metric. |
 | Eigenvalue gap heuristic for speaker count | Simple, deterministic, no learned model needed. Falls back to 2 on failure (covers the most common case). |
-| Causal mode uses EMA speaker memory | Avoids storing all embeddings for global clustering in streaming scenarios. Trade-off: speaker consistency degrades over long files as the memory drifts. |
-| `ProcessPoolExecutor` for batch | Inference is CPU-bound — bypasses the GIL for true parallelism across files. |
+| `StreamingDiarization` uses EMA speaker memory | Avoids storing all embeddings for global clustering in streaming scenarios. Trade-off: speaker consistency degrades over long files as the memory drifts. |
+| `ThreadPoolExecutor` for batch | Simpler than Process; sufficient for I/O-bound concurrency. Swap to `ProcessPoolExecutor` for true multi-core throughput (one-line change). |
 
 ---
 
 ## What I Would Improve Given More Time
 
-- **Speaker count estimation**: replace the eigenvalue heuristic with a learned or calibrated approach (e.g. BIC on the affinity matrix, or a small classifier trained on the gap features).
-- **Streaming/WebSocket API**: expose `CausalDiarization` over a real-time WebSocket endpoint for live microphone input.
-- **INT8 quantization**: quantise the embedding model for faster CPU throughput, particularly relevant for batch workloads.
-- **Proper evaluation harness**: compute DER (Diarization Error Rate) against ground-truth RTTM files so configuration changes have a measurable impact.
-- **Chunk boundary artefacts**: the current sliding window can split a speaker turn at a chunk edge. A smarter overlap-and-stitch strategy (e.g. voting on the overlapping region) would reduce boundary errors.
+- **Speaker count estimation**: replace the eigenvalue heuristic with a calibrated BIC or a small classifier trained on the affinity gap features.
+- **INT8 quantization**: quantise the embedding model for ~2× CPU throughput improvement on both batch and streaming paths.
+- **ProcessPoolExecutor for batch**: one-line swap from Thread to Process pool to bypass the GIL for true multi-core batch throughput.
+- **Resource-aware scheduling (D)**: profile file duration and system CPU/memory load before dispatch; dynamically reduce worker count under memory pressure; emit a utilization summary at batch end.
+- **Proper DER evaluation**: compute Diarization Error Rate against ground-truth RTTM files so threshold tuning has a measurable signal.
+- **Chunk boundary artefacts**: the sliding window can split a speaker turn at a chunk edge; overlap-and-vote on the overlapping region would reduce boundary errors.
+- **Live UI demo**: browser client connecting to `/ws/diarize` via the Web Audio API for real-time visualization.
 
 
 ## References Papers and Related Topics

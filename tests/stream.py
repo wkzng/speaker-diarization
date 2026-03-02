@@ -1,9 +1,9 @@
-from src.pipeline import CausalDiarization
+from src.pipeline import StreamingDiarization
 from src.config import AppConfig
 
 config = AppConfig.from_yaml("config.yaml")
 
-pipeline = CausalDiarization(
+pipeline = StreamingDiarization(
     config=config,
     models_dir="models",
     backend="onnx",

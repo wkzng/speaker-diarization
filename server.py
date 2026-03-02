@@ -22,7 +22,7 @@ from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDiscon
 from fastapi.responses import JSONResponse
 
 from config import AppConfig
-from pipeline import CausalDiarization, NonCausalDiarization
+from pipeline import Diarization, StreamingDiarization
 from schema import DiarizationResult
 
 logging.basicConfig(level=logging.INFO)
@@ -38,13 +38,13 @@ cfg = AppConfig.from_yaml(CONFIG_PATH) if Path(CONFIG_PATH).exists() else AppCon
 app = FastAPI(title="Speaker Diarization API", version="1.0.0")
 
 # Single shared pipeline instance (models loaded once at startup)
-_batch_pipeline: Optional[NonCausalDiarization] = None
+_batch_pipeline: Optional[Diarization] = None
 
 
 @app.on_event("startup")
 def load_models():
     global _batch_pipeline
-    _batch_pipeline = NonCausalDiarization(
+    _batch_pipeline = Diarization(
         models_dir=MODELS_DIR,
         backend=BACKEND,
         config=cfg,
@@ -99,7 +99,7 @@ CHUNK_SAMPLES = cfg.audio.chunk_samples  # 160000
 async def ws_diarize(websocket: WebSocket):
     await websocket.accept()
 
-    pipeline = CausalDiarization(
+    pipeline = StreamingDiarization(
         models_dir=MODELS_DIR,
         backend=BACKEND,
         config=cfg,

@@ -149,7 +149,7 @@ class BaseDiarization(ABC):
 
 
 
-class NonCausalDiarization(BaseDiarization):
+class Diarization(BaseDiarization):
 
     def __call__(self, audio_path) -> dict:
         waveform, duration = self.audio.load(audio_path)
@@ -222,7 +222,7 @@ class NonCausalDiarization(BaseDiarization):
 
 
 
-class CausalDiarization(BaseDiarization):
+class StreamingDiarization(BaseDiarization):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -1,10 +1,10 @@
-from src.pipeline import NonCausalDiarization
+from src.pipeline import Diarization
 from src.config import AppConfig
 
 config = AppConfig.from_yaml("config.yaml")
 
 
-pipeline = NonCausalDiarization(
+pipeline = Diarization(
     config=config,
     models_dir="models",
     backend="onnx",

@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from config import AppConfig
-from pipeline import NonCausalDiarization
+from pipeline import Diarization
 from schema import DiarizationResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -69,7 +69,7 @@ def main():
     logger.info(f"Processing {len(files)} file(s) | workers={args.workers}")
 
     def make_pipeline():
-        return NonCausalDiarization(
+        return Diarization(
             models_dir=args.models_dir, backend=args.backend,
             num_speakers=args.num_speakers, config=cfg,
         )
