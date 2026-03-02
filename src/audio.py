@@ -6,7 +6,7 @@ import torch
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 
-from config import AudioConfig
+from .config import AudioConfig
 
 
 class AudioProcessor:

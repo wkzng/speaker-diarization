@@ -2,7 +2,7 @@ audio:
   sample_rate: 16000
   chunk_duration: 10.0     # PyanNet was traced on 10s
   hop_duration: 1.0        # step between chunks in seconds (1s hop -> 90% overlap on 10s chunks)
-  allow_padding: true
+  allow_padding: false
   fbank:
     num_mel_bins: 80
     frame_length: 25.0     # ms
