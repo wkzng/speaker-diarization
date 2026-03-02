@@ -3,3 +3,5 @@
 audio/
 venv/
 models/
+results/
+__pycache__/
