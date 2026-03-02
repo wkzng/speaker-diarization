@@ -255,8 +255,10 @@ class StreamingDiarization(BaseDiarization):
         }
 
         # Step 3 — embed
-        embedded = embed_intervals(merged, waveform, self.audio, self.backend,
-                                   self.cfg.pipeline.min_embedding_samples)
+        embedded = embed_intervals(
+            merged, waveform, self.audio, self.backend,
+            self.cfg.pipeline.min_embedding_samples
+        )
         if not embedded:
             return []
 
@@ -268,6 +270,38 @@ class StreamingDiarization(BaseDiarization):
 
         return segments
 
+    def flush(
+        self,
+        waveform: torch.Tensor,  # full waveform accumulated so far (1, 1, N)
+        t_cursor: float,         # time in seconds at end of last processed chunk
+    ) -> "DiarizationResult":
+        """
+        Process any tail audio after t_cursor that didn't fill a complete chunk,
+        then return a DiarizationResult for the WebSocket done event.
+
+        In the typical case (client sends exact 10 s chunks) there is no tail and
+        this returns an empty segment list; num_speakers reflects the full session.
+        """
+        segments: List[DiarizationSegment] = []
+        n_samples = waveform.shape[-1]
+        start_sample = int(t_cursor * self.audio.config.sample_rate)
+
+        if start_sample < n_samples:
+            tail = waveform[:, :, start_sample:]
+            chunk_samples = self.audio.config.chunk_samples
+            if tail.shape[-1] < chunk_samples:
+                tail = torch.nn.functional.pad(tail, (0, chunk_samples - tail.shape[-1]))
+            t_end = t_cursor + self.audio.config.chunk_duration
+            segments = self.push_chunk(tail, t_cursor, t_end, waveform)
+
+        return DiarizationResult(
+            file="stream",
+            segments=segments,
+            duration=n_samples / self.audio.config.sample_rate,
+            num_speakers=len(self._memory),
+            backend=self.backend_name,
+        )
+
     def _match_or_create(self, emb: np.ndarray) -> str:
         if not self._memory:
             return self._new_speaker(emb)
@@ -276,9 +310,11 @@ class StreamingDiarization(BaseDiarization):
         best_sid, best_sim = max(sims.items(), key=lambda x: x[1])
 
         if best_sim >= self.cfg.pipeline.stitch_threshold:
-            # EMA update
-            updated = (self.cfg.pipeline.global_emb_decay * self._memory[best_sid]
-                       + (1 - self.cfg.pipeline.global_emb_decay) * emb)
+            # EMA update: new_state = alpha * old_state + (1 - alpha) * update
+            updated = (
+                self.cfg.pipeline.global_emb_decay * self._memory[best_sid]
+                + (1 - self.cfg.pipeline.global_emb_decay) * emb
+                )
             self._memory[best_sid] = updated / (np.linalg.norm(updated) + 1e-8)
             return f"speaker_{best_sid}"
 

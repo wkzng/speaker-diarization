@@ -4,6 +4,22 @@ cli_debug:
 	PYTHONPATH=src python cli.py audio/ --models-dir models --num-speakers 2 --output results/
 	cat results/debate.json
 
+cli_batch_json:
+	mkdir -p results
+	PYTHONPATH=src python cli.py audio/ \
+		--models-dir models \
+		--workers 4 \
+		--format json \
+		--output results/
+
+cli_batch_rttm:
+	mkdir -p results
+	PYTHONPATH=src python cli.py audio/ \
+		--models-dir models \
+		--workers 4 \
+		--format rttm \
+		--output results/
+
 server_start:
 	PYTHONPATH=src MODELS_DIR=models CONFIG_PATH=config.yaml python server.py
 
