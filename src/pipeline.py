@@ -7,11 +7,11 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
-from .audio import AudioProcessor
-from .backend import BackendType, InferenceBackend, create_backend
-from .clustering import cluster_embeddings, merge_segments
-from .config import AppConfig
-from .schema import DiarizationResult, DiarizationSegment
+from src.audio import AudioProcessor
+from src.backend import BackendType, InferenceBackend, create_backend
+from src.clustering import cluster_embeddings, merge_segments
+from src.config import AppConfig
+from src.schema import DiarizationResult, DiarizationSegment
 
 logger = logging.getLogger(__name__)
 
