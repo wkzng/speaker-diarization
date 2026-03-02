@@ -1,0 +1,17 @@
+
+cli_debug:
+	mkdir -p results
+	PYTHONPATH=src python cli.py audio/ --models-dir models --num-speakers 2 --output results/
+	cat results/debate.json
+
+server_start:
+	PYTHONPATH=src MODELS_DIR=models CONFIG_PATH=config.yaml python server.py
+
+server_health:
+	curl http://localhost:8000/health
+
+server_query:
+	curl -X POST http://localhost:8000/diarize \
+	-F "file=@audio/debate.wav" \
+	-F "num_speakers=2"
+	

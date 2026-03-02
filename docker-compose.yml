@@ -1,0 +1,14 @@
+services:
+  diarization:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro
+      - ./audio:/app/audio:ro
+      - ./results:/app/results 
+    environment:
+      - BACKEND=onnx
+      - MODELS_DIR=/app/models
+      - CONFIG_PATH=/app/config.yaml
+    restart: unless-stopped
