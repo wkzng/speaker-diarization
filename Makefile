@@ -30,4 +30,6 @@ server_query:
 	curl -X POST http://localhost:8000/diarize \
 	-F "file=@audio/debate.wav" \
 	-F "num_speakers=2"
-	
+
+webapp:
+	streamlit run webapp.py
