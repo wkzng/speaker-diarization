@@ -87,9 +87,35 @@ For each chunk:
 
 Each merged interval is sliced from the waveform and passed to WeSpeakerResNet34. Short segments are zero-padded to a minimum length.
 
-**Trade-off with zero-padding:** if a segment is very short, the zero-padding dominates the embedding and dilutes the speaker signal. Two improvements I planned but didn't implement:
-- Repeat the segment to fill the window (circular padding) — averaging effect, less dilution
-- Discard segments where padding exceeds a threshold of the payload
+**The zero-padding problem:**
+
+When a speech segment is shorter than the minimum window, the remainder is filled with silence:
+
+```
+Short segment (real speech):
+[████████░░░░░░░░░░░░░░░░░░░░░░░░]
+ ←─ 20% signal ──→←─ 80% zeros ─→
+
+Embedding ≈ weighted average → dominated by silence, not speaker
+```
+
+This dilutes the embedding toward a generic "silence" vector — the resulting 256-d representation no longer reliably identifies the speaker, which hurts clustering.
+
+**Planned fix — circular padding:**
+
+```
+Short segment repeated to fill window:
+[████████████████████████████████]
+ ←── copy ───→←── copy ───→←─ copy
+
+Embedding ≈ average of same speaker → stable, noise-reduced
+```
+
+Repeating the segment is equivalent to computing an average embedding over multiple repetitions of the same voice — a built-in denoising effect. The more the segment is repeated, the more the embedding stabilises toward the true speaker centroid.
+
+A second planned guard: discard segments where `len(signal) / window_size < threshold` (e.g. 0.3) entirely — if the segment is too short to produce a reliable embedding, including it in clustering only adds noise.
+
+Neither was implemented due to time constraints.
 
 ### Clustering
 
@@ -126,8 +152,6 @@ Here: find the nearest speaker prototype (argmax of cosine similarity), use it a
 
 Both pipelines were tested on the debate audio clip. Output was visually inspected against the HuggingFace reference.
 
-`tests/test_pipeline.py` contains a unit test suite covering the core logic without requiring model files (backends are mocked): `merge_intervals` gap-bridging and containment cases, `chunk_to_intervals` powerset decoding and confidence gating, `cluster_embeddings` label ordering and edge cases (0/1 segments), schema serialization (JSON and RTTM), batch runner failure isolation, and `StreamingDiarization.flush` tail audio handling.
-
 **Regret:** I wanted to compute DER (Diarization Error Rate) against the HuggingFace pipeline output to have a quantitative signal. I didn't have time to set up the evaluation properly.
 
 For a moment I considered using DTW to align the two output sequences — then thought better of it. DTW measures sequence similarity, not diarization accuracy. The right tool is `pyannote.metrics` DER, which handles speaker permutation and collar tolerance correctly.
@@ -141,8 +165,6 @@ FastAPI server with two endpoints:
 - `WS /ws/diarize` — WebSocket streaming, int16 PCM in, segment JSON out
 
 CLI for batch processing with `ThreadPoolExecutor` (swap to `ProcessPoolExecutor` for true multi-core — one-line change).
-
-Streamlit webapp (`webapp.py`) connects to `/ws/diarize` and streams audio in 10s chunks, rendering a proportional speaker timeline and segment list in real time as segments arrive. Audio player included for playback alongside the results.
 
 Docker image with models mounted at runtime (not baked in) to keep the image lean and avoid HuggingFace token requirements at build time.
 
@@ -158,4 +180,4 @@ Docker image with models mounted at runtime (not baked in) to keep the image lea
 | 4 | DBSCAN for clustering — no k estimation needed |
 | 5 | INT8 quantization of embedding model — ~2× CPU throughput |
 | 6 | Circular padding for short segments — reduce embedding dilution |
-| 7 | INT8 quantization of ONNX models — ~2× CPU throughput at iso-accuracy |
+| 7 | Live browser UI connecting to `/ws/diarize` via Web Audio API |
